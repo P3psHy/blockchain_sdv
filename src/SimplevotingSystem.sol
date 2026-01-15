@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.26;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-
-interface IVoteNFT {
-    function mint(address to) external;
-    function balanceOf(address owner) external view returns (uint256);
-}
+import {VoteNFT} from "./VoteNFT.sol";
 
 contract SimpleVotingSystem  is AccessControl {
     struct Candidate {
         uint id;
         string name;
         uint voteCount;
-        adresse payable wallet;
+        address payable wallet;
         uint256 received;
     }
 
@@ -35,20 +31,22 @@ contract SimpleVotingSystem  is AccessControl {
 
     WorkflowStatus public status;
     uint256 public voteStartTime;
-    IVoteNFT public voteNFT
+    VoteNFT public voteNFT;
 
     // Constructor
-    constructor() {
+    constructor(address _voteNFT) {
+        voteNFT = VoteNFT(_voteNFT);
         _grantRole(ADMIN_ROLE, msg.sender);
         _grantRole(FOUNDER_ROLE, msg.sender);
         _grantRole(WITHDRAWER_ROLE, msg.sender);
     }
 
     // Functions
-    function addCandidate(string memory _name) public onlyRole(ADMIN_ROLE) onlyDuringRegisterCandidates {
+    function addCandidate(string memory _name, address payable _wallet) public onlyRole(ADMIN_ROLE) onlyDuringRegisterCandidates {
         require(bytes(_name).length > 0, "Candidate name cannot be empty");
+        require(_wallet != address(0), "Candidate wallet cannot be zero");
         uint candidateId = candidateIds.length + 1;
-        candidates[candidateId] = Candidate(candidateId, _name, 0);
+        candidates[candidateId] = Candidate(candidateId, _name, 0, _wallet, 0);
         candidateIds.push(candidateId);
     }
 
@@ -79,7 +77,7 @@ contract SimpleVotingSystem  is AccessControl {
     }
 
     function changeWorkflowStatus(WorkflowStatus _status) public onlyRole(ADMIN_ROLE) {
-        if (_status == workflowStatus.VOTE) {
+        if (_status == WorkflowStatus.VOTE) {
             voteStartTime = block.timestamp;
         }
         status = _status;
@@ -100,7 +98,7 @@ contract SimpleVotingSystem  is AccessControl {
         emit CandidateFunded(msg.sender, candidateId, msg.value);
     }
 
-    function getWinner() public view returns (Candidate memory) onlyVoteCompleted {
+    function getWinner() public view onlyVoteCompleted returns (Candidate memory) {
         uint winningVoteCount = 0;
         uint winningCandidateId = 0;
 
@@ -125,6 +123,21 @@ contract SimpleVotingSystem  is AccessControl {
         require(ok, "Withdrawal failed");
     }
 
+    function addFounder(address account) external onlyRole(ADMIN_ROLE) {
+        _grantRole(FOUNDER_ROLE, account);
+    }
+
+    function addWithdrawer(address account) external onlyRole(ADMIN_ROLE) {
+        _grantRole(WITHDRAWER_ROLE, account);
+    }
+
+    function setWorkflowStatus(WorkflowStatus _status) external onlyRole(ADMIN_ROLE) {
+        if (_status == WorkflowStatus.VOTE) {
+            voteStartTime = block.timestamp;
+        }
+        status = _status;
+    }
+
     // Modifiers
     modifier onlyDuringRegisterCandidates() {
         require(status == WorkflowStatus.REGISTER_CANDIDATES, "Not in candidate registration phase");
@@ -140,6 +153,7 @@ contract SimpleVotingSystem  is AccessControl {
         if (_status == WorkflowStatus.VOTE) {
             require(block.timestamp >= voteStartTime + 1 hours, "Vote not open yet (1h delay)");
         }
+        _;
     }
     
     modifier onlyVoteCompleted() {
