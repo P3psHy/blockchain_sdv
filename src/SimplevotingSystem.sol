@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
+interface IVoteNFT {
+    function mint(address to) external;
+    function balanceOf(address owner) external view returns (uint256);
+}
 
 contract SimpleVotingSystem  is AccessControl {
     struct Candidate {
@@ -17,12 +22,9 @@ contract SimpleVotingSystem  is AccessControl {
     mapping(address => bool) public voters;
     uint[] private candidateIds;
 
-
-    uint256 public voteStartTime;
-
-
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant FOUNDER_ROLE = keccak256("FOUNDER_ROLE");
+    bytes32 public constant WITHDRAWER_ROLE = keccak256("WITHDRAWER_ROLE");
 
     enum WorkflowStatus {
         REGISTER_CANDIDATES,
@@ -30,12 +32,16 @@ contract SimpleVotingSystem  is AccessControl {
         VOTE,
         COMPLETED
     }
+
     WorkflowStatus public status;
+    uint256 public voteStartTime;
+    IVoteNFT public voteNFT
 
     // Constructor
     constructor() {
         _grantRole(ADMIN_ROLE, msg.sender);
         _grantRole(FOUNDER_ROLE, msg.sender);
+        _grantRole(WITHDRAWER_ROLE, msg.sender);
     }
 
     // Functions
@@ -49,9 +55,13 @@ contract SimpleVotingSystem  is AccessControl {
     function vote(uint _candidateId) public onlyDuringVote {
         require(!voters[msg.sender], "You have already voted");
         require(_candidateId > 0 && _candidateId <= candidateIds.length, "Invalid candidate ID");
+        require(address(voteNFT) != address(0), "Vote NFT contract not set");
+        require(voteNFT.balanceOf(msg.sender) == 0, "Already has vote NFT");
 
         voters[msg.sender] = true;
         candidates[_candidateId].voteCount += 1;
+
+        voteNFT.mint(msg.sender);
     }
 
     function getTotalVotes(uint _candidateId) public view returns (uint) {
@@ -90,6 +100,31 @@ contract SimpleVotingSystem  is AccessControl {
         emit CandidateFunded(msg.sender, candidateId, msg.value);
     }
 
+    function getWinner() public view returns (Candidate memory) onlyVoteCompleted {
+        uint winningVoteCount = 0;
+        uint winningCandidateId = 0;
+
+        for (uint i = 0; i < candidateIds.length; i++) {
+            uint candidateId = candidateIds[i];
+            if (candidates[candidateId].voteCount > winningVoteCount) {
+                winningVoteCount = candidates[candidateId].voteCount;
+                winningCandidateId = candidateId;
+            }
+        }
+
+        require(winningCandidateId != 0, "No votes cast");
+
+        return candidates[winningCandidateId];
+    }
+
+    function withdrawFunds(address payable to, uint256 amount) external onlyRole(WITHDRAWER_ROLE) onlyVoteCompleted {
+        require(to != address(0), "Invalid recipient address");
+        require(amount <= address(this).balance, "Insufficient contract balance");
+
+        (bool ok, ) = to.call{value: amount}("");
+        require(ok, "Withdrawal failed");
+    }
+
     // Modifiers
     modifier onlyDuringRegisterCandidates() {
         require(status == WorkflowStatus.REGISTER_CANDIDATES, "Not in candidate registration phase");
@@ -105,6 +140,11 @@ contract SimpleVotingSystem  is AccessControl {
         if (_status == WorkflowStatus.VOTE) {
             require(block.timestamp >= voteStartTime + 1 hours, "Vote not open yet (1h delay)");
         }
+    }
+    
+    modifier onlyVoteCompleted() {
+        require(status == WorkflowStatus.COMPLETED, "Voting not completed yet");
+        _;
     }
 
     // Events
